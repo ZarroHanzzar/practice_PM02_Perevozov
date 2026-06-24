@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "required": ["valid", "risk_score", "reasons"],
+  "properties": {
+    "valid": {
+      "type": "boolean",
+      "description": "Результат валидации"
+    },
+    "risk_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Оценка риска (0 - низкий, 1 - высокий)"
+    },
+    "reasons": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Список причин отклонения или факторов риска"
+    }
+  }
+}

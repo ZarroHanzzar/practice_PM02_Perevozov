@@ -1,0 +1,5 @@
+pytest>=7.0.0
+freezegun>=1.2.0
+pydantic>=2.0.0
+pytz>=2023.0
+pytest-cov>=4.0.0
