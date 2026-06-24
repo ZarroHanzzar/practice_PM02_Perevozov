@@ -1,0 +1,93 @@
+# 2.1 Скачиваем последний FULL бэкап
+aws s3 cp s3://magnolia-backup/postgres/loyalty/base.tar.zst /restore/
+zstd -d /restore/base.tar.zst
+
+# 2.2 Восстанавливаем базовый бэкап на новый RDS
+pg_restore -h dr-postgres.db -U admin -d loyalty /restore/base.tar
+
+# 2.3 Скачиваем WAL-логи за последний час
+aws s3 cp s3://magnolia-backup/postgres/wal/ /restore/wal/ \
+    --recursive \
+    --exclude "*" \
+    --include "*.wal"
+
+# 2.4 Настраиваем Point-in-Time Recovery (PITR)
+cat > /var/lib/postgresql/data/recovery.conf << EOF
+restore_command = 'cp /restore/wal/%f %p'
+recovery_target_time = '2026-06-17 09:15:00'
+recovery_target_action = 'promote'
+EOF
+
+systemctl restart postgresql
+
+# 2.5 Проверка целостности
+psql -h dr-postgres.db -U admin -d loyalty -c "SELECT COUNT(*) FROM users WHERE last_login > now() - interval '1 hour';"
+# Ожидаемый результат: > 15000
+
+# 3.1 Скачиваем последний снэпшот
+aws s3 cp s3://magnolia-backup/redis/latest.rdb /restore/
+
+# 3.2 Останавливаем Redis, копируем файл, запускаем
+systemctl stop redis
+cp /restore/latest.rdb /var/lib/redis/dump.rdb
+systemctl start redis
+
+# 3.3 Проверяем ключи
+redis-cli DBSIZE
+# Ожидаемый результат: количество ключей соответствует предыдущему дню
+
+# 4.1 Запускаем агрегатор, который подключается ко всем 2000 магазинам через VPN
+# Скрипт автоматически определяет доступные магазины
+
+for shop in $(cat /scripts/shops_list.txt); do
+    echo "Обработка магазина: $shop"
+    
+    # Пытаемся подключиться по SSH
+    if ssh -o ConnectTimeout=5 shop_user@$shop "echo 'OK'" 2>/dev/null; then
+        # Скачиваем последние binlog-файлы
+        rsync -avz --ignore-existing \
+            shop_user@$shop:/var/log/mysql/binlog.* \
+            /restore/binlogs/$shop/
+    else
+        echo "WARNING: Магазин $shop офлайн. Данные будут собраны позже."
+        echo "$shop" >> /tmp/offline_shops.txt
+    fi
+done
+
+# 4.2 Проверка количества собранных файлов
+ls -la /restore/binlogs/ | wc -l
+
+# 5.1 Объединяем все binlog-файлы и применяем к центральной БД
+for shop_dir in /restore/binlogs/*/; do
+    mysqlbinlog --database=pos_data \
+        $shop_dir/binlog.* \
+        | mysql -h dr-wms.db -U admin -p pos_data
+done
+
+# 5.2 Сверяем итоговые суммы за день
+mysql -h dr-wms.db -U admin -p pos_data -e \
+    "SELECT SUM(total) FROM orders WHERE date = CURDATE() - 1;"
+
+# 5.3 Проверяем количество заказов за сегодня
+mysql -h dr-wms.db -U admin -p pos_data -e \
+    "SELECT COUNT(*) FROM orders WHERE date = CURDATE();"
+
+    # Меняем CNAME на новый ALB
+aws route53 change-resource-record-sets \
+    --hosted-zone-id Z123456 \
+    --change-batch file://dns_failover.json
+
+# Ждём TTL (5 минут)
+sleep 300
+
+# Проверяем доступность через curl
+curl -I https://api.magnolia.ru/v1/health
+
+# 1. Проверка всех микросервисов
+kubectl get pods -n production
+
+# 2. Проверка интеграций
+curl -X POST https://api.magnolia.ru/v1/health/check-dependencies
+
+# 3. Уведомление бизнеса
+slack-notify --channel "#infra" --message "Восстановление завершено. RTO: 3ч 45мин"

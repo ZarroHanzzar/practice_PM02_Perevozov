@@ -1,0 +1,187 @@
+{
+  "title": "Backup Monitoring Dashboard",
+  "version": 1.0,
+  "description": "Дашборд для мониторинга резервного копирования Магнолия",
+  "sections": [
+    {
+      "name": "Общая статистика",
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Последний успешный бэкап (все системы)",
+          "query": "time() - backup_last_success_timestamp_seconds{job='global'}",
+          "format": "seconds"
+        },
+        {
+          "type": "stat",
+          "title": "Общий размер бэкапов (за сутки)",
+          "query": "sum(backup_size_bytes{job='pos_terminals'}) + sum(backup_size_bytes{job='wms'})",
+          "format": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "Статус POS-терминалов",
+      "panels": [
+        {
+          "type": "table",
+          "title": "Последние бэкапы по магазинам",
+          "columns": ["shop_id", "last_backup_time", "status", "size_mb"],
+          "query": "backup_status{job='pos_terminals'}",
+          "alerts": [
+            "Если статус = 0 в течение 10 минут - критический алерт"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Алерты Prometheus",
+      "rules": [
+        {
+          "alert": "POSBackupFailed",
+          "expr": "pos_backup_status{job='pos_terminals'} == 0",
+          "for": "10m",
+          "labels": {
+            "severity": "critical",
+            "team": "infra"
+          },
+          "annotations": {
+            "summary": "POS-терминал {{ $labels.shop_id }} не делает бэкап уже 10 минут",
+            "description": "Проверьте соединение с магазином и свободное место на диске"
+          }
+        },
+        {
+          "alert": "BackupAgeExceedsRPO",
+          "expr": "(time() - pos_backup_timestamp_seconds{job='pos_terminals'}) > 2700",
+          "for": "5m",
+          "labels": {
+            "severity": "warning",
+            "team": "infra"
+          },
+          "annotations": {
+            "summary": "Возраст бэкапа для {{ $labels.shop_id }} превышает 45 минут (RPO 30 мин)",
+            "description": "RPO нарушен! Проверьте систему бэкапов"
+          }
+        },
+        {
+          "alert": "WMSBackupTooOld",
+          "expr": "(time() - wms_last_successful_backup) > 900",
+          "for": "5m",
+          "labels": {
+            "severity": "critical",
+            "team": "dba"
+          },
+          "annotations": {
+            "summary": "WMS бэкап старше 15 минут (RPO = 15 мин)",
+            "description": "Проверьте WAL-архивацию PostgreSQL"
+          }
+        },
+        {
+          "alert": "DiskSpaceNearFull",
+          "expr": "(node_filesystem_avail_bytes{mountpoint='/backup'} / node_filesystem_size_bytes{mountpoint='/backup'}) < 0.15",
+          "for": "10m",
+          "labels": {
+            "severity": "critical"
+          },
+          "annotations": {
+            "summary": "На сервере бэкапов осталось менее 15% свободного места",
+            "description": "Требуется очистка или расширение диска"
+          }
+        },
+        {
+          "alert": "BackupChecksumMismatch",
+          "expr": "backup_checksum_valid == 0",
+          "for": "0m",
+          "labels": {
+            "severity": "critical"
+          },
+          "annotations": {
+            "summary": "Нарушена целостность бэкапа {{ $labels.job_name }}",
+            "description": "Проверьте контрольные суммы (MD5 не совпадают)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Метрики, собираемые Node Exporter",
+      "metrics": [
+        {
+          "name": "backup_status",
+          "type": "gauge",
+          "help": "Статус бэкапа (1 - успех, 0 - провал)",
+          "labels": ["job", "shop_id", "component"]
+        },
+        {
+          "name": "backup_last_success_timestamp_seconds",
+          "type": "gauge",
+          "help": "Unix timestamp последнего успешного бэкапа"
+        },
+        {
+          "name": "backup_duration_seconds",
+          "type": "histogram",
+          "help": "Длительность бэкапа в секундах",
+          "buckets": [60, 300, 600, 1800, 3600]
+        },
+        {
+          "name": "backup_size_bytes",
+          "type": "gauge",
+          "help": "Размер бэкапа в байтах"
+        },
+        {
+          "name": "backup_checksum_valid",
+          "type": "gauge",
+          "help": "Валидность контрольной суммы (1 - OK, 0 - не совпадает)"
+        }
+      ]
+    },
+    {
+      "name": "JSON-схема BackupReport",
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "required": ["job_name", "status", "size_bytes", "duration_seconds", "timestamp", "checksum_md5"],
+        "properties": {
+          "job_name": {
+            "type": "string",
+            "enum": ["pos_backup", "wms_wal", "loyalty_snapshot", "redis_backup"]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["success", "partial", "failed"]
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "duration_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "checksum_md5": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$"
+          },
+          "shop_id": {
+            "type": "string"
+          },
+          "error_message": {
+            "type": "string"
+          }
+        },
+        "example": {
+          "job_name": "pos_backup",
+          "status": "success",
+          "size_bytes": 153600000,
+          "duration_seconds": 45.2,
+          "timestamp": "2026-06-17T09:15:30Z",
+          "checksum_md5": "5d41402abc4b2a76b9719d911017c592",
+          "shop_id": "shop_001"
+        }
+      }
+    }
+  ]
+}
