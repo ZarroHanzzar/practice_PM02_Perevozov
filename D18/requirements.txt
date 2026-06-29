@@ -1,0 +1,26 @@
+# requirements.txt
+# Основные зависимости для разработки и тестирования
+
+# Тестирование
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-xdist>=3.3.1
+pytest-mock>=3.11.1
+pytest-benchmark>=4.0.0
+pytest-timeout>=2.1.0
+
+# Мутационное тестирование
+mutmut>=2.4.0
+
+# Покрытие кода
+coverage>=7.3.0
+
+# Статический анализ
+mypy>=1.5.0
+flake8>=6.1.0
+black>=23.9.1
+isort>=5.12.0
+
+# Дополнительные утилиты
+requests>=2.31.0
+python-dotenv>=1.0.0
